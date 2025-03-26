@@ -1,95 +1,157 @@
-import numpy as np
-import networkx as nx
-
+# Cette fonction lit la table de contraintes (tasks, durations, dependencies) depuis un fichier
 def read_constraint_table(filename):
+    # On ouvre le fichier texte contenant la table de contraintes
     with open(filename, 'r') as file:
         lines = file.readlines()
-    
+
     tasks = {}
+    # On lit chaque ligne du fichier (chaque ligne correspond à une task)
     for line in lines:
-        values = list(map(int, line.split()))
-        task_id = values[0]
-        duration = values[1]
-        predecessors = values[2:]
+        values = list(map(int, line.strip().split()))
+        task_id = values[0]  # numéro de la task (ex: 1, 2, 3...)
+        duration = values[1]  # durée de la task
+        predecessors = values[2:]  # tasks qui doivent être faites avant celle-ci
+        # On stocke tout dans un dictionnaire avec l’ID de la task comme clé
         tasks[task_id] = {'duration': duration, 'predecessors': predecessors}
-    
+
     return tasks
 
-def build_graph(tasks):
-    G = nx.DiGraph()
-    
-    for task_id, data in tasks.items():
-        G.add_node(task_id, duration=data['duration'])
+# Construit le graphe en ajoutant les tasks fictives de début (0) et fin (N+1)
+def build_graph_with_fictive_nodes(tasks):
+    N = max(tasks.keys())  # numéro de la dernière vraie task
+    graph = {i: [] for i in range(N + 2)}  # on crée un graphe vide avec les sommets de 0 à N+1
+    durations = {i: 0 for i in range(N + 2)}  # on initialise les durations à 0
+
+    # Ajout des arêtes entre chaque task et ses predecessors
+    for task, data in tasks.items():
+        durations[task] = data['duration']  # on sauvegarde la duration de la task
         for pred in data['predecessors']:
-            G.add_edge(pred, task_id, weight=tasks[pred]['duration'])
-    
-    return G
+            graph[pred].append(task)  # on relie pred -> task
 
-def check_graph_properties(G):
-    if not nx.is_directed_acyclic_graph(G):
-        print("Error: The graph contains a cycle!")
+    # On connecte les tasks sans predecessors au nœud fictif 0 (début)
+    for task in tasks:
+        if not tasks[task]['predecessors']:
+            graph[0].append(task)
+
+    # On connecte les tasks sans successeurs au nœud fictif N+1 (fin)
+    for task in tasks:
+        if all(task not in tasks[other]['predecessors'] for other in tasks):
+            graph[task].append(N + 1)
+
+    return graph, durations
+
+# Vérifie s'il y a un cycle dans le graphe (via DFS)
+def detect_cycle(graph):
+    visited = set()
+    rec_stack = set()  # utilisé pour détecter un cycle pendant la DFS
+
+    def dfs(v):
+        visited.add(v)
+        rec_stack.add(v)
+        for neighbor in graph[v]:
+            if neighbor not in visited:
+                if dfs(neighbor):
+                    return True
+            elif neighbor in rec_stack:
+                return True  # cycle détecté !
+        rec_stack.remove(v)
         return False
-    
-    for u, v, d in G.edges(data=True):
-        if d['weight'] < 0:
-            print("Error: The graph contains negative weight edges!")
-            return False
-    
-    return True
 
-def compute_ranks(G):
-    ranks = {node: rank for rank, node in enumerate(nx.topological_sort(G))}
-    return ranks
+    for node in graph:
+        if node not in visited:
+            if dfs(node):
+                return True  # le graphe contient un cycle
+    return False  # aucun cycle trouvé
 
-def compute_earliest_latest_floats(G):
-    earliest_start = {node: 0 for node in G.nodes()}
-    for node in nx.topological_sort(G):
-        for successor in G.successors(node):
-            earliest_start[successor] = max(
-                earliest_start[successor], earliest_start[node] + G.nodes[node]['duration']
-            )
-    
-    latest_start = earliest_start.copy()
-    project_end = max(earliest_start.values())
-    latest_start = {node: project_end for node in G.nodes()}
-    
-    for node in reversed(list(nx.topological_sort(G))):
-        for predecessor in G.predecessors(node):
-            latest_start[predecessor] = min(
-                latest_start[predecessor], latest_start[node] - G.nodes[predecessor]['duration']
-            )
-    
-    floats = {node: latest_start[node] - earliest_start[node] for node in G.nodes()}
-    
-    return earliest_start, latest_start, floats
+# Tri topologique pour ordonner les tasks selon les dependencies
+def topological_sort(graph):
+    visited = set()
+    result = []  # liste des tasks triées
 
-def find_critical_path(G, earliest_start, latest_start):
-    critical_path = [node for node in G.nodes() if earliest_start[node] == latest_start[node]]
-    return critical_path
+    def dfs(node):
+        visited.add(node)
+        for neighbor in graph[node]:
+            if neighbor not in visited:
+                dfs(neighbor)
+        result.insert(0, node)  # on insère en début de liste (ordre inverse)
 
+    for node in graph:
+        if node not in visited:
+            dfs(node)
+    return result
+
+# Calcule les earliest et latest start times, ainsi que les floats
+def compute_earliest_latest(graph, durations, topo_order):
+    earliest = {node: 0 for node in graph}  # initialisation des earliest à 0
+
+    # On parcourt dans l’ordre topologique pour remplir les earliest
+    for node in topo_order:
+        for neighbor in graph[node]:
+            earliest[neighbor] = max(earliest[neighbor], earliest[node] + durations[node])
+
+    # Le latest du nœud de fin est égal à son earliest
+    latest = {node: earliest[max(earliest, key=earliest.get)] for node in graph}
+
+    # On remonte le graphe pour calculer les latest
+    for node in reversed(topo_order):
+        for neighbor in graph[node]:
+            latest[node] = min(latest[node], latest[neighbor] - durations[node])
+
+    # Float = marge = combien on peut retarder une task sans impacter le projet
+    floats = {node: latest[node] - earliest[node] for node in graph}
+    return earliest, latest, floats
+
+# Les tasks critiques sont celles dont le float est nul (pas de flexibilité)
+def find_critical_path(earliest, latest):
+    return [node for node in earliest if earliest[node] == latest[node]]
+
+# Programme principal qui lance tout le processus
 def main():
     while True:
         filename = input("Enter constraint table filename (or 'exit' to quit): ")
         if filename.lower() == 'exit':
             break
-        
-        tasks = read_constraint_table(filename)
-        G = build_graph(tasks)
-        
-        print("Graph representation:")
-        print(nx.adjacency_matrix(G).todense())
-        
-        if check_graph_properties(G):
-            ranks = compute_ranks(G)
-            print("Ranks:", ranks)
-            
-            earliest_start, latest_start, floats = compute_earliest_latest_floats(G)
-            print("Earliest Start Times:", earliest_start)
-            print("Latest Start Times:", latest_start)
-            print("Floats:", floats)
-            
-            critical_path = find_critical_path(G, earliest_start, latest_start)
-            print("Critical Path:", critical_path)
+
+        tasks = read_constraint_table(filename)  # Lecture du fichier
+
+        # On construit un graphe de base (sans tasks fictives) juste pour vérifier les cycles
+        raw_graph = {i: [] for i in tasks}
+        for task, data in tasks.items():
+            for pred in data['predecessors']:
+                raw_graph[pred].append(task)
+
+        print("\nRaw Graph edges:")
+        for src in raw_graph:
+            for dst in raw_graph[src]:
+                print(f"{src} -> {dst}")
+
+        if detect_cycle(raw_graph):
+            print("\nThe graph contains a cycle. Scheduling not possible.")
+            continue
+        else:
+            print("\nNo cycles detected. Proceeding with scheduling...")
+
+        # On construit maintenant le graphe complet avec les nodes fictifs
+        graph, durations = build_graph_with_fictive_nodes(tasks)
+
+        print("\nGraph with fictive nodes:")
+        for src in graph:
+            for dst in graph[src]:
+                print(f"{src} -> {dst}")
+
+        topo_order = topological_sort(graph)  # ordre d’exécution
+        print("Topological Order:", topo_order)
+
+        # Calcul des dates et marges
+        earliest, latest, floats = compute_earliest_latest(graph, durations, topo_order)
+
+        print("\nEarliest Start Times:", earliest)
+        print("Latest Start Times:", latest)
+        print("Float Times:", floats)
+
+        # Identification du chemin critique
+        critical_path = find_critical_path(earliest, latest)
+        print("\nCritical Path:", critical_path)
 
 if __name__ == "__main__":
     main()
