@@ -1,157 +1,205 @@
-# Cette fonction lit la table de contraintes (tasks, durations, dependencies) depuis un fichier
+from collections import deque
+
+
 def read_constraint_table(filename):
-    # On ouvre le fichier texte contenant la table de contraintes
-    with open(filename, 'r') as file:
-        lines = file.readlines()
-
-    tasks = {}
-    # On lit chaque ligne du fichier (chaque ligne correspond à une task)
+    """Read the constraint table from a .txt file and store it in memory."""
+    with open(filename, 'r') as f:
+        lines = f.readlines()
+    tasks = []
     for line in lines:
-        values = list(map(int, line.strip().split()))
-        task_id = values[0]  # numéro de la task (ex: 1, 2, 3...)
-        duration = values[1]  # durée de la task
-        predecessors = values[2:]  # tasks qui doivent être faites avant celle-ci
-        # On stocke tout dans un dictionnaire avec l’ID de la task comme clé
-        tasks[task_id] = {'duration': duration, 'predecessors': predecessors}
-
+        numbers = list(map(int, line.strip().split()))
+        task = {
+            'number': numbers[0],
+            'duration': numbers[1],
+            'predecessors': numbers[2:] if len(numbers) > 2 else []
+        }
+        tasks.append(task)
     return tasks
 
-# Construit le graphe en ajoutant les tasks fictives de début (0) et fin (N+1)
-def build_graph_with_fictive_nodes(tasks):
-    N = max(tasks.keys())  # numéro de la dernière vraie task
-    graph = {i: [] for i in range(N + 2)}  # on crée un graphe vide avec les sommets de 0 à N+1
-    durations = {i: 0 for i in range(N + 2)}  # on initialise les durations à 0
 
-    # Ajout des arêtes entre chaque task et ses predecessors
-    for task, data in tasks.items():
-        durations[task] = data['duration']  # on sauvegarde la duration de la task
-        for pred in data['predecessors']:
-            graph[pred].append(task)  # on relie pred -> task
+def build_graph(tasks):
+    """Build the graph as a value matrix with fictitious tasks 0 (alpha) and N+1 (omega)."""
+    N = len(tasks)
+    durations = [0] + [task['duration'] for task in tasks] + [0]  # 0 for alpha and omega
+    graph = [[None for _ in range(N + 2)] for _ in range(N + 2)]
 
-    # On connecte les tasks sans predecessors au nœud fictif 0 (début)
+    # Add edges from predecessors
     for task in tasks:
-        if not tasks[task]['predecessors']:
-            graph[0].append(task)
+        j = task['number']
+        for p in task['predecessors']:
+            graph[p][j] = durations[p]
 
-    # On connecte les tasks sans successeurs au nœud fictif N+1 (fin)
+    # Find tasks with no predecessors and add edges from alpha (0)
+    tasks_with_no_predecessors = [task['number'] for task in tasks if not task['predecessors']]
+    for j in tasks_with_no_predecessors:
+        graph[0][j] = 0
+
+    # Find tasks with no successors and add edges to omega (N+1)
+    all_predecessors = set()
     for task in tasks:
-        if all(task not in tasks[other]['predecessors'] for other in tasks):
-            graph[task].append(N + 1)
+        all_predecessors.update(task['predecessors'])
+    all_tasks = set(range(1, N + 1))
+    tasks_with_no_successors = list(all_tasks - all_predecessors)
+    for j in tasks_with_no_successors:
+        graph[j][N + 1] = durations[j]
 
     return graph, durations
 
-# Vérifie s'il y a un cycle dans le graphe (via DFS)
-def detect_cycle(graph):
-    visited = set()
-    rec_stack = set()  # utilisé pour détecter un cycle pendant la DFS
 
-    def dfs(v):
-        visited.add(v)
-        rec_stack.add(v)
-        for neighbor in graph[v]:
-            if neighbor not in visited:
-                if dfs(neighbor):
-                    return True
-            elif neighbor in rec_stack:
-                return True  # cycle détecté !
-        rec_stack.remove(v)
-        return False
+def display_graph_triplets(graph):
+    """Display the graph in triplet form: edge by edge."""
+    N = len(graph) - 2
+    edges = [(i, j, graph[i][j]) for i in range(N + 2) for j in range(N + 2) if graph[i][j] is not None]
+    print("Creating the scheduling graph:")
+    print(f"{N + 2} vertices")
+    print(f"{len(edges)} edges")
+    for u, v, w in edges:
+        print(f"{u} -> {v} = {w}")
 
-    for node in graph:
-        if node not in visited:
-            if dfs(node):
-                return True  # le graphe contient un cycle
-    return False  # aucun cycle trouvé
 
-# Tri topologique pour ordonner les tasks selon les dependencies
+def display_graph_matrix(graph):
+    """Display the graph as a value matrix."""
+    N = len(graph) - 2
+    print("Value Matrix")
+    print("   ", end="")
+    for i in range(N + 2):
+        print(f"{i:3}", end="")
+    print()
+    for i in range(N + 2):
+        print(f"{i:2} ", end="")
+        for j in range(N + 2):
+            if graph[i][j] is None:
+                print("  *", end="")
+            else:
+                print(f"{graph[i][j]:3}", end="")
+        print()
+
+
+def has_negative_edges(graph):
+    """Check if the graph has any negative-weight edges."""
+    for row in graph:
+        for val in row:
+            if val is not None and val < 0:
+                return True
+    return False
+
+
+def compute_indegrees(graph):
+    """Compute the in-degree of each vertex."""
+    N = len(graph) - 2
+    indegrees = [0] * (N + 2)
+    for i in range(N + 2):
+        for j in range(N + 2):
+            if graph[i][j] is not None:
+                indegrees[j] += 1
+    return indegrees
+
+
 def topological_sort(graph):
-    visited = set()
-    result = []  # liste des tasks triées
+    """Perform topological sort and detect cycles using Kahn's algorithm."""
+    N = len(graph) - 2
+    indegrees = compute_indegrees(graph)
+    queue = deque([i for i in range(N + 2) if indegrees[i] == 0])
+    order = []
+    while queue:
+        u = queue.popleft()
+        order.append(u)
+        for v in range(N + 2):
+            if graph[u][v] is not None:
+                indegrees[v] -= 1
+                if indegrees[v] == 0:
+                    queue.append(v)
+    if len(order) == N + 2:
+        return order
+    else:
+        return None  # Indicates a cycle
 
-    def dfs(node):
-        visited.add(node)
-        for neighbor in graph[node]:
-            if neighbor not in visited:
-                dfs(neighbor)
-        result.insert(0, node)  # on insère en début de liste (ordre inverse)
 
-    for node in graph:
-        if node not in visited:
-            dfs(node)
-    return result
+def compute_earliest_dates(graph, order):
+    """Compute the earliest start dates for each vertex."""
+    N = len(graph) - 2
+    earliest = [0] * (N + 2)  # Alpha starts at 0
+    for v in order:
+        for u in range(N + 2):
+            if graph[u][v] is not None:
+                earliest[v] = max(earliest[v], earliest[u] + graph[u][v])
+    return earliest
 
-# Calcule les earliest et latest start times, ainsi que les floats
-def compute_earliest_latest(graph, durations, topo_order):
-    earliest = {node: 0 for node in graph}  # initialisation des earliest à 0
 
-    # On parcourt dans l’ordre topologique pour remplir les earliest
-    for node in topo_order:
-        for neighbor in graph[node]:
-            earliest[neighbor] = max(earliest[neighbor], earliest[node] + durations[node])
-
-    # Le latest du nœud de fin est égal à son earliest
-    latest = {node: earliest[max(earliest, key=earliest.get)] for node in graph}
-
-    # On remonte le graphe pour calculer les latest
-    for node in reversed(topo_order):
-        for neighbor in graph[node]:
-            latest[node] = min(latest[node], latest[neighbor] - durations[node])
-
-    # Float = marge = combien on peut retarder une task sans impacter le projet
-    floats = {node: latest[node] - earliest[node] for node in graph}
-    return earliest, latest, floats
-
-# Les tasks critiques sont celles dont le float est nul (pas de flexibilité)
-def find_critical_path(earliest, latest):
-    return [node for node in earliest if earliest[node] == latest[node]]
-
-# Programme principal qui lance tout le processus
-def main():
-    while True:
-        filename = input("Enter constraint table filename (or 'exit' to quit): ")
-        if filename.lower() == 'exit':
-            break
-
-        tasks = read_constraint_table(filename)  # Lecture du fichier
-
-        # On construit un graphe de base (sans tasks fictives) juste pour vérifier les cycles
-        raw_graph = {i: [] for i in tasks}
-        for task, data in tasks.items():
-            for pred in data['predecessors']:
-                raw_graph[pred].append(task)
-
-        print("\nRaw Graph edges:")
-        for src in raw_graph:
-            for dst in raw_graph[src]:
-                print(f"{src} -> {dst}")
-
-        if detect_cycle(raw_graph):
-            print("\nThe graph contains a cycle. Scheduling not possible.")
+def compute_latest_dates(graph, order, earliest):
+    """Compute the latest start dates, setting omega's latest date to its earliest date."""
+    N = len(graph) - 2
+    latest = [None] * (N + 2)
+    latest[N + 1] = earliest[N + 1]  # Latest date of omega equals its earliest date
+    for u in reversed(order):
+        if u == N + 1:
             continue
-        else:
-            print("\nNo cycles detected. Proceeding with scheduling...")
+        min_val = min([latest[v] - graph[u][v] for v in range(N + 2) if graph[u][v] is not None])
+        latest[u] = min_val
+    return latest
 
-        # On construit maintenant le graphe complet avec les nodes fictifs
-        graph, durations = build_graph_with_fictive_nodes(tasks)
 
-        print("\nGraph with fictive nodes:")
-        for src in graph:
-            for dst in graph[src]:
-                print(f"{src} -> {dst}")
+def main():
+    """Main program loop to process constraint tables."""
+    while True:
+        filename = input("Enter the constraint table filename (or 'q' to quit): ")
+        if filename.lower() == 'q':
+            break
+        try:
+            # Step 1: Read and store the constraint table
+            print("\nStep 1: Reading and storing the constraint table")
+            tasks = read_constraint_table(filename)
+            print(f"Read {len(tasks)} tasks from {filename}")
 
-        topo_order = topological_sort(graph)  # ordre d’exécution
-        print("Topological Order:", topo_order)
+            # Step 2: Build and display the graph
+            print("\nStep 2: Building and displaying the graph")
+            graph, durations = build_graph(tasks)
+            N = len(tasks)
+            display_graph_triplets(graph)
+            print("\nDisplaying the value matrix:")
+            display_graph_matrix(graph)
 
-        # Calcul des dates et marges
-        earliest, latest, floats = compute_earliest_latest(graph, durations, topo_order)
+            # Step 3: Check graph properties
+            print("\nStep 3: Checking graph properties")
+            if has_negative_edges(graph):
+                print("There are negative-weight edges. Not a valid scheduling graph.")
+                continue
+            else:
+                print("No negative-weight edges found.")
 
-        print("\nEarliest Start Times:", earliest)
-        print("Latest Start Times:", latest)
-        print("Float Times:", floats)
+            order = topological_sort(graph)
+            if order is None:
+                print("There is a cycle in the graph. Not a valid scheduling graph.")
+                continue
+            else:
+                print("No cycles detected. This is a valid scheduling graph.")
 
-        # Identification du chemin critique
-        critical_path = find_critical_path(earliest, latest)
-        print("\nCritical Path:", critical_path)
+            # Step 4: Compute and display ranks
+            print("\nStep 4: Computing and displaying ranks")
+            ranks = {vertex: idx for idx, vertex in enumerate(order)}
+            print("Ranks of vertices:", [ranks[i] for i in range(N + 2)])
+
+            # Step 5: Compute and display earliest and latest dates
+            print("\nStep 5: Computing and displaying calendars")
+            earliest = compute_earliest_dates(graph, order)
+            print("Earliest dates:", earliest)
+            latest = compute_latest_dates(graph, order, earliest)
+            print("Latest dates:", latest)
+
+            # Compute and display floats
+            floats = [latest[j] - earliest[j] for j in range(1, N + 1)]
+            print("Floats for tasks 1 to N:", floats)
+
+            # Step 6: Compute and display critical tasks
+            print("\nStep 6: Computing and displaying critical tasks")
+            critical_tasks = [j for j in range(1, N + 1) if floats[j - 1] == 0]
+            print("Critical tasks (tasks with float 0):", critical_tasks)
+
+        except FileNotFoundError:
+            print(f"Error: File '{filename}' not found.")
+        except Exception as e:
+            print(f"Error: {e}")
+
 
 if __name__ == "__main__":
     main()
