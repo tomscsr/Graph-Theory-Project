@@ -4,55 +4,75 @@ from collections import deque
 def read_constraint_table(filename):
     """Read the constraint table from a .txt file and store it in memory."""
     with open(filename, 'r') as f:
+        # Stores all lines of the file in the list lines
         lines = f.readlines()
+    # Initialization of the tasks list
     tasks = []
     for line in lines:
+        # converting each string character of the line to int and storing them in the list numbers
         numbers = list(map(int, line.strip().split()))
+        # Adds a dictionary task with the 3 characteristics of a task: the task number, its duration and a list of his dependencies
         task = {
             'number': numbers[0],
             'duration': numbers[1],
             'predecessors': numbers[2:] if len(numbers) > 2 else []
         }
+        # Appends the task dictionary to the list tasks
         tasks.append(task)
     return tasks
 
 
 def build_graph(tasks):
     """Build the graph as a value matrix with fictitious tasks 0 (alpha) and N+1 (omega)."""
+    # Number of initial tasks (without alpha and omega)
     N = len(tasks)
+    # Stores the duration of each task including alpha and omega as a list in durations
     durations = [0] + [task['duration'] for task in tasks] + [0]  # 0 for alpha and omega
+    # Initializes the graph as a value matrix N+2 by N+2 of values None
     graph = [[None for _ in range(N + 2)] for _ in range(N + 2)]
 
     # Add edges from predecessors
     for task in tasks:
+        # Store the number of the successor task in j
         j = task['number']
+        # Set the weight (duration of predecessor task p) for edge p -> j
         for p in task['predecessors']:
             graph[p][j] = durations[p]
 
     # Find tasks with no predecessors and add edges from alpha (0)
     tasks_with_no_predecessors = [task['number'] for task in tasks if not task['predecessors']]
     for j in tasks_with_no_predecessors:
+        # Sets the edge 0 -> j to weight 0
         graph[0][j] = 0
 
     # Find tasks with no successors and add edges to omega (N+1)
+    # Stores all predecessors of the graph in a set of unordered and unique elements
     all_predecessors = set()
     for task in tasks:
         all_predecessors.update(task['predecessors'])
+    # Stores the N task numbers in a set (unordered and unique elements) from 1 to N+1
     all_tasks = set(range(1, N + 1))
+    # Stores tasks with no successors in a list by subtracting the set of predecessor tasks from the set of all tasks
     tasks_with_no_successors = list(all_tasks - all_predecessors)
+    # Creates an edge from each task without successors (j) to task omega (N+1) with weight duration of j (j -> omega = duration of j)
     for j in tasks_with_no_successors:
         graph[j][N + 1] = durations[j]
 
+    # Returns the graph as an adjacency matrix and the list of tasks durations
     return graph, durations
 
 
 def display_graph_triplets(graph):
     """Display the graph in triplet form: edge by edge."""
+    # Number of tasks
     N = len(graph) - 2
+    # Stores each dependency as a tuple (predecessor, successor, weight) in the edges list
     edges = [(i, j, graph[i][j]) for i in range(N + 2) for j in range(N + 2) if graph[i][j] is not None]
+    # Displays the number of vertices and edges of the graph
     print("Creating the scheduling graph:")
     print(f"{N + 2} vertices")
     print(f"{len(edges)} edges")
+    # prints each dependency in the form: predecessor -> successor = weight
     for u, v, w in edges:
         print(f"{u} -> {v} = {w}")
 
@@ -86,8 +106,11 @@ def has_negative_edges(graph):
 
 def compute_indegrees(graph):
     """Compute the in-degree of each vertex."""
+    # Calculate the number of tasks (vertices excluding alpha and omega)
     N = len(graph) - 2
+    # Initializes the in-degrees list of length N+2 with O values
     indegrees = [0] * (N + 2)
+    # Fills the in-degrees list
     for i in range(N + 2):
         for j in range(N + 2):
             if graph[i][j] is not None:
@@ -97,45 +120,73 @@ def compute_indegrees(graph):
 
 def topological_sort(graph):
     """Perform topological sort and detect cycles using Kahn's algorithm."""
+    # Calculate the number of tasks (vertices excluding alpha and omega)
     N = len(graph) - 2
+    # Get the in-degrees of all vertices by calling the compute_indegrees function
     indegrees = compute_indegrees(graph)
+    # Create a queue with vertices that have no incoming edges (in-degree = 0)
     queue = deque([i for i in range(N + 2) if indegrees[i] == 0])
+    # Initialize an empty list to store the topological order
     order = []
+    # Process the queue until it’s empty
     while queue:
+        # Remove and get the first vertex from the queue
         u = queue.popleft()
+        # Add the vertex to the topological order
         order.append(u)
+        # Check all possible neighbors (successors) of vertex u
         for v in range(N + 2):
             if graph[u][v] is not None:
+                # If there's an edge from u to v, decrease the in-degree of v since u is processed
                 indegrees[v] -= 1
+                # If v now has no incoming edges, add it to the queue
                 if indegrees[v] == 0:
                     queue.append(v)
+    # If all vertices are included in the order list, the graph is acyclic and we return the order
     if len(order) == N + 2:
         return order
+    # Otherwise, the graph has a cycle and we return None
     else:
         return None  # Indicates a cycle
 
 
 def compute_earliest_dates(graph, order):
     """Compute the earliest start dates for each vertex."""
+    # Calculate the number of tasks (vertices excluding alpha and omega)
     N = len(graph) - 2
+    # Initialize the earliest dates list with 0s; alpha (vertex 0) starts at time 0
     earliest = [0] * (N + 2)  # Alpha starts at 0
+    # Process each vertex in topological order
     for v in order:
+        # Check all possible predecessors of vertex v
         for u in range(N + 2):
+            # If there’s an edge from u to v
             if graph[u][v] is not None:
+                # Update earliest[v] to be the maximum of its current value and
+                # earliest[u] + duration of task u (weight of edge u->v)
                 earliest[v] = max(earliest[v], earliest[u] + graph[u][v])
+    # Return the list of earliest start dates
     return earliest
 
 
 def compute_latest_dates(graph, order, earliest):
     """Compute the latest start dates, setting omega's latest date to its earliest date."""
+    # Calculate the number of tasks (vertices excluding alpha and omega)
     N = len(graph) - 2
+    # Initialize latest dates list with None values
     latest = [None] * (N + 2)
-    latest[N + 1] = earliest[N + 1]  # Latest date of omega equals its earliest date
+    # Set the latest date of omega (N+1) to its earliest date (project end time)
+    latest[N + 1] = earliest[N + 1]
+    # Process each vertex in reverse topological order (excluding omega)
     for u in reversed(order):
+        # Skip omega since its latest date is already set
         if u == N + 1:
             continue
+        # Compute the minimum value of (latest[v] - weight[u][v]) for all successors v of u
         min_val = min([latest[v] - graph[u][v] for v in range(N + 2) if graph[u][v] is not None])
+        # Set the latest date of u to this minimum value
         latest[u] = min_val
+    # Return the list of latest start dates
     return latest
 
 
@@ -176,27 +227,34 @@ def main():
 
             # Step 4: Compute and display ranks
             print("\nStep 4: Computing and displaying ranks")
+            # Create a dictionary mapping each vertex to its position (rank) in the topological order
             ranks = {vertex: idx for idx, vertex in enumerate(order)}
+            # Display ranks in vertex order (0 to N+1)
             print("Ranks of vertices:", [ranks[i] for i in range(N + 2)])
 
             # Step 5: Compute and display earliest and latest dates
             print("\nStep 5: Computing and displaying calendars")
+            # Compute the earliest start dates using the topological order
             earliest = compute_earliest_dates(graph, order)
             print("Earliest dates:", earliest)
+            # Compute latest start dates based on earliest dates and topological order
             latest = compute_latest_dates(graph, order, earliest)
             print("Latest dates:", latest)
 
-            # Compute and display floats
+            # Compute floats (slack time) for tasks 1 to N
             floats = [latest[j] - earliest[j] for j in range(1, N + 1)]
             print("Floats for tasks 1 to N:", floats)
 
             # Step 6: Compute and display critical tasks
             print("\nStep 6: Computing and displaying critical tasks")
+            # Critical tasks are those with zero float (no slack time)
             critical_tasks = [j for j in range(1, N + 1) if floats[j - 1] == 0]
             print("Critical tasks (tasks with float 0):", critical_tasks)
 
+        # Handle the case where the file doesn’t exist
         except FileNotFoundError:
             print(f"Error: File '{filename}' not found.")
+        # Handle any other unexpected errors
         except Exception as e:
             print(f"Error: {e}")
 
