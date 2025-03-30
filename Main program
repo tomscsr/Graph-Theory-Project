@@ -1,263 +1,248 @@
+# cycle_safe_scheduler.py
+
+import os
+from time import sleep
 from collections import deque
 
+# === Task Parser ===
+class Task:
+    # Represents a task with an ID, duration, and optional list of predecessors
+    def __init__(self, id, duration, predecessors=None):
+        self.id = id
+        self.duration = duration
+        self.predecessors = predecessors or []
 
-def read_constraint_table(filename):
-    """Read the constraint table from a .txt file and store it in memory."""
-    with open(filename, 'r') as f:
-        # Stores all lines of the file in the list lines
+def parse_constraint_file(filepath):
+    # Reads a task constraint file and builds a dictionary of Task objects
+    if not os.path.exists(filepath):
+        raise FileNotFoundError(f"File not found: {filepath}")
+
+    tasks = {}
+    with open(filepath, 'r', encoding='utf-8') as f:
         lines = f.readlines()
-    # Initialization of the tasks list
-    tasks = []
-    for line in lines:
-        # converting each string character of the line to int and storing them in the list numbers
-        numbers = list(map(int, line.strip().split()))
-        # Adds a dictionary task with the 3 characteristics of a task: the task number, its duration and a list of his dependencies
-        task = {
-            'number': numbers[0],
-            'duration': numbers[1],
-            'predecessors': numbers[2:] if len(numbers) > 2 else []
-        }
-        # Appends the task dictionary to the list tasks
-        tasks.append(task)
+
+    for line_num, line in enumerate(lines, 1):
+        if not line.strip():
+            continue  # Skip empty lines
+        parts = line.strip().split()
+        if len(parts) < 2:
+            raise ValueError(f"Line {line_num} is invalid: '{line.strip()}'")
+        try:
+            task_id = int(parts[0])  # Task ID
+            duration = int(parts[1])  # Task duration
+            predecessors = list(map(int, parts[2:])) if len(parts) > 2 else []  # Optional predecessors
+        except ValueError:
+            raise ValueError(f"Line {line_num} has non-integer values: '{line.strip()}'")
+        if task_id in tasks:
+            raise ValueError(f"Duplicate task ID {task_id} found at line {line_num}")
+        tasks[task_id] = Task(task_id, duration, predecessors)
+
     return tasks
 
+# === Graph Handling ===
+def build_graph_matrix(tasks):
+    # Builds the adjacency matrix of the task graph, with Start and End fictive nodes
+    task_ids = sorted(tasks.keys())
+    n = len(task_ids)
 
-def build_graph(tasks):
-    """Build the graph as a value matrix with fictitious tasks 0 (alpha) and N+1 (omega)."""
-    # Number of initial tasks (without alpha and omega)
-    N = len(tasks)
-    # Stores the duration of each task including alpha and omega as a list in durations
-    durations = [0] + [task['duration'] for task in tasks] + [0]  # 0 for alpha and omega
-    # Initializes the graph as a value matrix N+2 by N+2 of values None
-    graph = [[None for _ in range(N + 2)] for _ in range(N + 2)]
+    # Maps real task IDs to matrix indices (1-based)
+    id_to_index = {task_id: idx + 1 for idx, task_id in enumerate(task_ids)}
+    index_to_id = {idx + 1: task_id for idx, task_id in enumerate(task_ids)}
 
-    # Add edges from predecessors
-    for task in tasks:
-        # Store the number of the successor task in j
-        j = task['number']
-        # Set the weight (duration of predecessor task p) for edge p -> j
-        for p in task['predecessors']:
-            graph[p][j] = durations[p]
+    total_nodes = n + 2  # Add Start (0) and End (N+1)
+    matrix = [['*' for _ in range(total_nodes)] for _ in range(total_nodes)]  # Initialize with '*'
 
-    # Find tasks with no predecessors and add edges from alpha (0)
-    tasks_with_no_predecessors = [task['number'] for task in tasks if not task['predecessors']]
-    for j in tasks_with_no_predecessors:
-        # Sets the edge 0 -> j to weight 0
-        graph[0][j] = 0
+    # Add edge from Start (0) to tasks without predecessors
+    for task_id, task in tasks.items():
+        if not task.predecessors:
+            matrix[0][id_to_index[task_id]] = 0
 
-    # Find tasks with no successors and add edges to omega (N+1)
-    # Stores all predecessors of the graph in a set of unordered and unique elements
-    all_predecessors = set()
-    for task in tasks:
-        all_predecessors.update(task['predecessors'])
-    # Stores the N task numbers in a set (unordered and unique elements) from 1 to N+1
-    all_tasks = set(range(1, N + 1))
-    # Stores tasks with no successors in a list by subtracting the set of predecessor tasks from the set of all tasks
-    tasks_with_no_successors = list(all_tasks - all_predecessors)
-    # Creates an edge from each task without successors (j) to task omega (N+1) with weight duration of j (j -> omega = duration of j)
-    for j in tasks_with_no_successors:
-        graph[j][N + 1] = durations[j]
+    # Add edges between tasks based on precedence relations
+    for task_id, task in tasks.items():
+        for pred in task.predecessors:
+            matrix[id_to_index[pred]][id_to_index[task_id]] = tasks[pred].duration
 
-    # Returns the graph as an adjacency matrix and the list of tasks durations
-    return graph, durations
+    # Add edges from tasks without successors to End (last node)
+    successors = {pred for task in tasks.values() for pred in task.predecessors}
+    for task_id in task_ids:
+        if task_id not in successors:
+            matrix[id_to_index[task_id]][total_nodes - 1] = tasks[task_id].duration
 
+    return matrix, total_nodes, index_to_id
 
-def display_graph_triplets(graph):
-    """Display the graph in triplet form: edge by edge."""
-    # Number of tasks
-    N = len(graph) - 2
-    # Stores each dependency as a tuple (predecessor, successor, weight) in the edges list
-    edges = [(i, j, graph[i][j]) for i in range(N + 2) for j in range(N + 2) if graph[i][j] is not None]
-    # Displays the number of vertices and edges of the graph
-    print("Creating the scheduling graph:")
-    print(f"{N + 2} vertices")
-    print(f"{len(edges)} edges")
-    # prints each dependency in the form: predecessor -> successor = weight
-    for u, v, w in edges:
-        print(f"{u} -> {v} = {w}")
+def detect_cycle(matrix, total_nodes):
+    # Detects cycles using entry point elimination method (variant of topological sort)
+    print("\n* Detecting a cycle using entry point elimination")
+    remaining = set(range(total_nodes))  # All nodes initially
+    in_degrees = {i: 0 for i in range(total_nodes)}  # Count of incoming edges for each node
 
+    # Count incoming edges
+    for j in range(total_nodes):
+        for i in range(total_nodes):
+            if matrix[i][j] != '*':
+                in_degrees[j] += 1
 
-def display_graph_matrix(graph):
-    """Display the graph as a value matrix."""
-    N = len(graph) - 2
-    print("Value Matrix")
-    print("   ", end="")
-    for i in range(N + 2):
-        print(f"{i:3}", end="")
-    print()
-    for i in range(N + 2):
-        print(f"{i:2} ", end="")
-        for j in range(N + 2):
-            if graph[i][j] is None:
-                print("  *", end="")
-            else:
-                print(f"{graph[i][j]:3}", end="")
-        print()
+    # Repeatedly eliminate nodes with zero in-degree (entry points)
+    while True:
+        entry_points = [v for v in remaining if in_degrees[v] == 0]
+        if not entry_points:
+            break
+        print(f"  Entry points: {entry_points}")
+        for v in entry_points:
+            remaining.remove(v)
+            for j in range(total_nodes):
+                if matrix[v][j] != '*':
+                    in_degrees[j] -= 1
 
-
-def has_negative_edges(graph):
-    """Check if the graph has any negative-weight edges."""
-    for row in graph:
-        for val in row:
-            if val is not None and val < 0:
-                return True
-    return False
-
-
-def compute_indegrees(graph):
-    """Compute the in-degree of each vertex."""
-    # Calculate the number of tasks (vertices excluding alpha and omega)
-    N = len(graph) - 2
-    # Initializes the in-degrees list of length N+2 with O values
-    indegrees = [0] * (N + 2)
-    # Fills the in-degrees list
-    for i in range(N + 2):
-        for j in range(N + 2):
-            if graph[i][j] is not None:
-                indegrees[j] += 1
-    return indegrees
-
-
-def topological_sort(graph):
-    """Perform topological sort and detect cycles using Kahn's algorithm."""
-    # Calculate the number of tasks (vertices excluding alpha and omega)
-    N = len(graph) - 2
-    # Get the in-degrees of all vertices by calling the compute_indegrees function
-    indegrees = compute_indegrees(graph)
-    # Create a queue with vertices that have no incoming edges (in-degree = 0)
-    queue = deque([i for i in range(N + 2) if indegrees[i] == 0])
-    # Initialize an empty list to store the topological order
-    order = []
-    # Process the queue until it’s empty
-    while queue:
-        # Remove and get the first vertex from the queue
-        u = queue.popleft()
-        # Add the vertex to the topological order
-        order.append(u)
-        # Check all possible neighbors (successors) of vertex u
-        for v in range(N + 2):
-            if graph[u][v] is not None:
-                # If there's an edge from u to v, decrease the in-degree of v since u is processed
-                indegrees[v] -= 1
-                # If v now has no incoming edges, add it to the queue
-                if indegrees[v] == 0:
-                    queue.append(v)
-    # If all vertices are included in the order list, the graph is acyclic and we return the order
-    if len(order) == N + 2:
-        return order
-    # Otherwise, the graph has a cycle and we return None
+    # If nodes remain, a cycle exists
+    if remaining:
+        print(f"  Cycle detected! Remaining vertices: {sorted(remaining)}")
+        return True
     else:
-        return None  # Indicates a cycle
+        print(" No cycle detected.")
+        return False
 
+def negative_weights(matrix):
+    # Check for negative weights in the matrix
+    print("\n* Checking for negative weights")
+    has_negative = False
+    for i in range(len(matrix)):
+        for j in range(len(matrix)):
+            if matrix[i][j] != '*' and matrix[i][j] < 0:
+                print(f"  Negative weight at ({i}, {j})")
+                has_negative = True
+    if not has_negative:
+        print(" No negative weights.")
+    return has_negative
 
-def compute_earliest_dates(graph, order):
-    """Compute the earliest start dates for each vertex."""
-    # Calculate the number of tasks (vertices excluding alpha and omega)
-    N = len(graph) - 2
-    # Initialize the earliest dates list with 0s; alpha (vertex 0) starts at time 0
-    earliest = [0] * (N + 2)  # Alpha starts at 0
-    # Process each vertex in topological order
-    for v in order:
-        # Check all possible predecessors of vertex v
-        for u in range(N + 2):
-            # If there’s an edge from u to v
-            if graph[u][v] is not None:
-                # Update earliest[v] to be the maximum of its current value and
-                # earliest[u] + duration of task u (weight of edge u->v)
-                earliest[v] = max(earliest[v], earliest[u] + graph[u][v])
-    # Return the list of earliest start dates
+# === Scheduling Calculations ===
+def compute_ranks(matrix, total_nodes, index_to_id):
+    # Computes the rank of each node using longest path from Start
+    ranks = {i: 0 for i in range(total_nodes)}  # Initialize all ranks to 0
+    sorted_nodes = []
+    to_process = [i for i in range(total_nodes) if all(matrix[j][i] == '*' for j in range(total_nodes))]
+
+    # BFS-like process to update ranks
+    while to_process:
+        current = to_process.pop(0)
+        sorted_nodes.append(current)
+        for j in range(total_nodes):
+            if matrix[current][j] != '*':
+                ranks[j] = max(ranks[j], ranks[current] + 1)  # Update rank
+                incoming = [i for i in range(total_nodes) if matrix[i][j] != '*']
+                if all(i in sorted_nodes for i in incoming):
+                    to_process.append(j)
+    return ranks
+
+def compute_earliest_dates(matrix, total_nodes, ranks):
+    # Computes the earliest time each task can start
+    earliest = {i: 0 for i in range(total_nodes)}
+    sorted_nodes = sorted(range(total_nodes), key=lambda x: ranks[x])  # Topological order
+    for i in sorted_nodes:
+        for j in range(total_nodes):
+            if matrix[i][j] != '*':
+                earliest[j] = max(earliest[j], earliest[i] + matrix[i][j])
     return earliest
 
-
-def compute_latest_dates(graph, order, earliest):
-    """Compute the latest start dates, setting omega's latest date to its earliest date."""
-    # Calculate the number of tasks (vertices excluding alpha and omega)
-    N = len(graph) - 2
-    # Initialize latest dates list with None values
-    latest = [None] * (N + 2)
-    # Set the latest date of omega (N+1) to its earliest date (project end time)
-    latest[N + 1] = earliest[N + 1]
-    # Process each vertex in reverse topological order (excluding omega)
-    for u in reversed(order):
-        # Skip omega since its latest date is already set
-        if u == N + 1:
-            continue
-        # Compute the minimum value of (latest[v] - weight[u][v]) for all successors v of u
-        min_val = min([latest[v] - graph[u][v] for v in range(N + 2) if graph[u][v] is not None])
-        # Set the latest date of u to this minimum value
-        latest[u] = min_val
-    # Return the list of latest start dates
+def compute_latest_dates(matrix, total_nodes, earliest, ranks):
+    # Computes the latest time each task can start without delaying the project
+    latest = {i: earliest[total_nodes - 1] for i in range(total_nodes)}  # Initialize to project duration
+    sorted_nodes = sorted(range(total_nodes), key=lambda x: ranks[x], reverse=True)  # Reverse topological order
+    for i in sorted_nodes:
+        for j in range(total_nodes):
+            if matrix[i][j] != '*':
+                latest[i] = min(latest[i], latest[j] - matrix[i][j])
     return latest
 
+def find_critical_paths(current, path, matrix, earliest, total_nodes):
+    # Finds all critical paths from Start (0) to End (N+1) where float = 0
+    if current == 0:
+        yield [0] + path
+    else:
+        for i in range(total_nodes):
+            if (matrix[i][current] != '*' and earliest[current] == earliest[i] + matrix[i][current]):
+                yield from find_critical_paths(i, [current] + path, matrix, earliest, total_nodes)
 
+# === Display Functions ===
+def get_node_label(i, total_nodes, index_to_id):
+    # Converts node index to human-readable label
+    return "Start" if i == 0 else "End" if i == total_nodes - 1 else f"Task {index_to_id[i]}"
+
+def display_matrix(matrix, total_nodes, index_to_id):
+    # Displays the adjacency matrix of the graph
+    print("\n=== Graph Matrix ===")
+    col_width = 4
+    header = " " * (col_width - 1) + "".join(f"{j:>{col_width}}" for j in range(total_nodes))
+    print(header)
+    print(" " * (col_width - 1) + "-" * (total_nodes * col_width))
+    for i in range(total_nodes):
+        row = f"{i:>{col_width - 1}}|"
+        for j in range(total_nodes):
+            val = matrix[i][j]
+            row += f"{val if val != '*' else '*':>{col_width}}"
+        print(row)
+
+def display_data(label, data, total_nodes, index_to_id):
+    # Generic function to display rank, earliest, latest, or float values
+    print(f"\n=== {label} ===")
+    for i in range(total_nodes):
+        print(f"{get_node_label(i, total_nodes, index_to_id)}: {data[i]}")
+
+def display_critical_paths(paths, total_nodes, index_to_id, earliest):
+    # Displays all critical paths and their duration
+    print("\n=== Critical Paths ===")
+    if not paths:
+        print("No critical paths found.")
+    else:
+        for idx, path in enumerate(paths, 1):
+            path_str = " -> ".join(get_node_label(i, total_nodes, index_to_id) for i in path)
+            print(f"Critical Path {idx}: {path_str} (Total duration: {earliest[total_nodes - 1]})")
+
+# === Main Loop ===
 def main():
-    """Main program loop to process constraint tables."""
     while True:
-        filename = input("Enter the constraint table filename (or 'q' to quit): ")
-        if filename.lower() == 'q':
-            break
         try:
-            # Step 1: Read and store the constraint table
-            print("\nStep 1: Reading and storing the constraint table")
-            tasks = read_constraint_table(filename)
-            print(f"Read {len(tasks)} tasks from {filename}")
+            # Ask user for a file to load
+            print("\nEnter the number of the constraint table to work with (1-14), or 0 to exit:")
+            constraint_nb = int(input("> "))
+            if constraint_nb == 0:
+                print("Goodbye!")
+                break
 
-            # Step 2: Build and display the graph
-            print("\nStep 2: Building and displaying the graph")
-            graph, durations = build_graph(tasks)
-            N = len(tasks)
-            display_graph_triplets(graph)
-            print("\nDisplaying the value matrix:")
-            display_graph_matrix(graph)
+            # Build graph from file
+            filepath = f"table {constraint_nb}.txt"
+            tasks = parse_constraint_file(filepath)
+            matrix, total_nodes, index_to_id = build_graph_matrix(tasks)
 
-            # Step 3: Check graph properties
-            print("\nStep 3: Checking graph properties")
-            if has_negative_edges(graph):
-                print("There are negative-weight edges. Not a valid scheduling graph.")
-                continue
-            else:
-                print("No negative-weight edges found.")
+            # Show graph matrix
+            display_matrix(matrix, total_nodes, index_to_id)
 
-            order = topological_sort(graph)
-            if order is None:
-                print("There is a cycle in the graph. Not a valid scheduling graph.")
-                continue
-            else:
-                print("No cycles detected. This is a valid scheduling graph.")
+            # Check if graph is valid
+            has_cycle = detect_cycle(matrix, total_nodes)
+            has_negative = negative_weights(matrix)
 
-            # Step 4: Compute and display ranks
-            print("\nStep 4: Computing and displaying ranks")
-            # Create a dictionary mapping each vertex to its position (rank) in the topological order
-            ranks = {vertex: idx for idx, vertex in enumerate(order)}
-            # Display ranks in vertex order (0 to N+1)
-            print("Ranks of vertices:", [ranks[i] for i in range(N + 2)])
+            if has_cycle:
+                print("\n Scheduling computation skipped due to cycle.\n")
+                continue  # Loop again for another file
 
-            # Step 5: Compute and display earliest and latest dates
-            print("\nStep 5: Computing and displaying calendars")
-            # Compute the earliest start dates using the topological order
-            earliest = compute_earliest_dates(graph, order)
-            print("Earliest dates:", earliest)
-            # Compute latest start dates based on earliest dates and topological order
-            latest = compute_latest_dates(graph, order, earliest)
-            print("Latest dates:", latest)
+            print("\n Valid scheduling graph. Computing scheduling data...\n")
 
-            # Compute floats (slack time) for tasks 1 to N
-            floats = [latest[j] - earliest[j] for j in range(1, N + 1)]
-            print("Floats for tasks 1 to N:", floats)
+            # Compute and display all scheduling information
+            ranks = compute_ranks(matrix, total_nodes, index_to_id)
+            earliest = compute_earliest_dates(matrix, total_nodes, ranks)
+            latest = compute_latest_dates(matrix, total_nodes, earliest, ranks)
+            floats = {i: latest[i] - earliest[i] for i in range(total_nodes)}
+            critical_paths = list(find_critical_paths(total_nodes - 1, [], matrix, earliest, total_nodes))
 
-            # Step 6: Compute and display critical tasks
-            print("\nStep 6: Computing and displaying critical tasks")
-            # Critical tasks are those with zero float (no slack time)
-            critical_tasks = [j for j in range(1, N + 1) if floats[j - 1] == 0]
-            print("Critical tasks (tasks with float 0):", critical_tasks)
+            display_data("Rank", ranks, total_nodes, index_to_id)
+            display_data("Earliest Start", earliest, total_nodes, index_to_id)
+            display_data("Latest Start", latest, total_nodes, index_to_id)
+            display_data("Total Float", floats, total_nodes, index_to_id)
+            display_critical_paths(critical_paths, total_nodes, index_to_id, earliest)
 
-        # Handle the case where the file doesn’t exist
-        except FileNotFoundError:
-            print(f"Error: File '{filename}' not found.")
-        # Handle any other unexpected errors
         except Exception as e:
-            print(f"Error: {e}")
-
+            print(f" Error: {e}")
+            sleep(1)
 
 if __name__ == "__main__":
     main()
